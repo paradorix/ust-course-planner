@@ -49,6 +49,9 @@ export default function TemplateBar({
       activeId: template.id,
       templates: [...prev.templates, template],
     }));
+    // Drop straight into the name field with the default name selected, so
+    // typing replaces it — naming a plan shouldn't require a second click.
+    beginRename(template.id, template.name);
   }
 
   function duplicate(template: Template) {
@@ -72,6 +75,11 @@ export default function TemplateBar({
       const activeId = prev.activeId === id ? (templates[0]?.id ?? null) : prev.activeId;
       return { ...prev, activeId, templates };
     });
+  }
+
+  function beginRename(id: string, currentName: string) {
+    setRenaming(id);
+    setDraftName(currentName);
   }
 
   function commitRename(id: string) {
@@ -135,6 +143,7 @@ export default function TemplateBar({
                   autoFocus
                   value={draftName}
                   onChange={(e) => setDraftName(e.target.value)}
+                  onFocus={(e) => e.currentTarget.select()}
                   onBlur={() => commitRename(t.id)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") commitRename(t.id);
@@ -146,20 +155,25 @@ export default function TemplateBar({
                 <button
                   type="button"
                   onClick={() => setStore((prev) => ({ ...prev, activeId: t.id }))}
-                  onDoubleClick={() => {
-                    setRenaming(t.id);
-                    setDraftName(t.name);
-                  }}
+                  onDoubleClick={() => beginRename(t.id, t.name)}
                   title={
                     stale
                       ? `Saved for a different term (${t.selected.length} sections) — switch term to view it`
-                      : `${t.selected.length} section${t.selected.length === 1 ? "" : "s"}`
+                      : `${t.selected.length} section${t.selected.length === 1 ? "" : "s"} · double-click to rename`
                   }
                 >
                   {t.name}
                   {stale ? " ⋯" : ""}
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => beginRename(t.id, t.name)}
+                title="Rename"
+                className="opacity-0 group-hover:opacity-60 hover:!opacity-100"
+              >
+                ✎
+              </button>
               <button
                 type="button"
                 onClick={() => duplicate(t)}
