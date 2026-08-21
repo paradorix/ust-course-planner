@@ -9,6 +9,9 @@ export const metadata: Metadata = {
   title: "UST Course Planner",
   description:
     "Plan an HKUST timetable with course and instructor ratings shown per section. Unofficial and not affiliated with HKUST.",
+  // Deliberately unadvertised: reachable by anyone with the link, but not
+  // meant to be found by search engines.
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
