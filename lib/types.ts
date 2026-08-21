@@ -40,12 +40,13 @@ export const CRITERION_META: Record<
     source: "review",
   },
   workload: {
-    // All six are standardized *ratings*, not raw quantities, so a higher
-    // score means students rated the dimension more favourably. Stated this
-    // way deliberately: the upstream data does not document the polarity of
-    // "workload", so claiming higher = lighter would be inventing a fact.
+    // Polarity here is higher = lighter workload, confirmed by the project
+    // owner. The upstream feed still does not document this, so the claim
+    // rests on that confirmation rather than on the source data; the data is
+    // at least consistent with it (MATH3043, honours real analysis, sits at
+    // #644 of 658).
     label: "Workload",
-    blurb: "Rated more favourably on workload",
+    blurb: "How light the workload is",
     source: "review",
   },
   instructor: {
@@ -160,8 +161,17 @@ export interface RatingsFile {
   /**
    * Percentile lookup per criterion, so the UI can render a letter grade
    * without shipping the whole population.
+   *
+   * `ladder` holds 101 empirical breakpoints — `ladder[k]` is the value at
+   * the k-th percentile — so a score is placed by its real rank rather than
+   * by a curve fitted to it. `confidenceP10` is the 10th percentile of this
+   * criterion's confidence values, the cutoff below which the UI marks a
+   * score as thinly evidenced.
    */
-  distribution: Record<Criterion, { mean: number; stdev: number; count: number }>;
+  distribution: Record<
+    Criterion,
+    { count: number; ladder: number[]; confidenceP10: number }
+  >;
   /** Keyed by course code ("COMP1023") or by canonical instructor name. */
   entries: Record<string, RatingSet>;
 }

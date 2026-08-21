@@ -17,22 +17,51 @@ export interface Scored {
   /** 0–100, relative to this term's population for that criterion. */
   percentile: number;
   letter: string;
-  /** Few samples means the score is weakly supported; the UI flags it. */
+  /** Weakly evidenced relative to its peers; the UI flags it. */
   thin: boolean;
+  /** How many entities this was ranked against, for the UI to name the scale. */
+  population: number;
 }
 
-/** Normal CDF via Abramowitz–Stegun; good to ~1e-7, which is far beyond need. */
-function normalCdf(z: number): number {
-  const sign = z < 0 ? -1 : 1;
-  const x = Math.abs(z) / Math.SQRT2;
-  const t = 1 / (1 + 0.3275911 * x);
-  const y =
-    1 -
-    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t +
-      0.254829592) *
-      t *
-      Math.exp(-x * x);
-  return 0.5 * (1 + sign * y);
+/**
+ * Place a value in its population using the empirical quantile ladder.
+ *
+ * `ladder[k]` is the value at the k-th percentile, so the returned number is
+ * the entity's actual rank in the sorted population. This deliberately does
+ * not fit a curve: these distributions are strongly left-skewed and
+ * heavy-tailed, and a normal approximation misreports rank by up to 24
+ * percentile points — enough to badge the single highest-rated course on
+ * offer as 97th percentile.
+ */
+function percentileIn(ladder: number[], value: number): number {
+  const last = ladder.length - 1;
+  if (value <= ladder[0]) return 0;
+  if (value >= ladder[last]) return 100;
+
+  // First breakpoint at or above the value.
+  let lo = 0;
+  let hi = last;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ladder[mid] < value) lo = mid + 1;
+    else hi = mid;
+  }
+
+  if (ladder[lo] !== value) {
+    // Strictly between two breakpoints — interpolate between their ranks.
+    const below = ladder[lo - 1];
+    return ((lo - 1 + (value - below) / (ladder[lo] - below)) / last) * 100;
+  }
+
+  // Shrinkage toward the prior pulls many entities onto identical values, so
+  // the ladder contains flat runs. Everyone in a run is genuinely tied, so
+  // report the middle of it rather than handing one arbitrary edge to
+  // whoever happens to look it up.
+  let start = lo;
+  let end = lo;
+  while (start > 0 && ladder[start - 1] === value) start--;
+  while (end < last && ladder[end + 1] === value) end++;
+  return (((start + end) / 2 / last) * 100);
 }
 
 const LETTERS: [number, string][] = [
@@ -70,19 +99,24 @@ export function scoreOf(
 
   const stats = distribution?.[criterion];
   // Without a population we cannot place the score, so report it unranked
-  // rather than inventing a percentile.
-  if (!stats || !stats.stdev) {
-    return { value, percentile: 50, letter: "—", thin: value.samples < 3 };
+  // rather than inventing a percentile — and do not warn about thin evidence
+  // either, since there is nothing to calibrate that against.
+  if (!stats || !stats.ladder || stats.ladder.length < 2) {
+    return { value, percentile: 50, letter: "—", thin: false, population: 0 };
   }
 
-  const z = (value.bayesian - stats.mean) / stats.stdev;
-  const percentile = Math.max(0, Math.min(100, normalCdf(z) * 100));
+  const percentile = percentileIn(stats.ladder, value.bayesian);
 
   return {
     value,
     percentile,
     letter: letterFor(percentile),
-    thin: value.samples < 3,
+    // `samples` counts only responses new in one term and is 0 almost
+    // everywhere, so it cannot carry this. `confidence` is the cumulative
+    // weight of evidence, compared here against its own population's 10th
+    // percentile.
+    thin: value.confidence < stats.confidenceP10,
+    population: stats.count,
   };
 }
 

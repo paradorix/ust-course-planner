@@ -6,8 +6,7 @@
  */
 
 import RatingBadge from "@/components/RatingBadge";
-import type { SeatInfo } from "@/components/Planner";
-import type { Scored } from "@/lib/rating";
+import type { Chip, SeatInfo } from "@/components/Planner";
 import type { Section } from "@/lib/types";
 
 export default function SectionRow({
@@ -16,18 +15,16 @@ export default function SectionRow({
   clashing,
   seat,
   seatsFailed,
-  scoreInstructor,
+  instructorChips,
   onToggle,
 }: {
-  code: string;
   section: Section;
   selected: boolean;
   clashing: boolean;
   seat: SeatInfo | null;
   seatsFailed: boolean;
-  scoreInstructor: (name: string) => Scored | null;
-  courseScore: Scored | null;
-  criterionLabel: string;
+  /** One chip per criterion being shown, so this row never branches on mode. */
+  instructorChips: (name: string) => Chip[];
   onToggle: () => void;
 }) {
   const instructorNames = [
@@ -85,13 +82,20 @@ export default function SectionRow({
             ) : null}
           </div>
 
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <div className="mt-1.5 space-y-1">
             {instructorNames.length > 0 ? (
               instructorNames.map((name) => (
-                <span key={name} className="inline-flex items-center gap-1 text-[11px]">
+                <div key={name} className="flex flex-wrap items-center gap-1.5 text-[11px]">
                   <span className="text-foreground/90">{name}</span>
-                  <RatingBadge score={scoreInstructor(name)} compact />
-                </span>
+                  {instructorChips(name).map((chip) => (
+                    <RatingBadge
+                      key={chip.key}
+                      score={chip.score}
+                      label={chip.label}
+                      scale="instructors"
+                    />
+                  ))}
+                </div>
               ))
             ) : (
               <span className="text-[11px] text-muted">Instructor TBA</span>

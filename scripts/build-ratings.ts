@@ -125,12 +125,35 @@ function forEachArrayElement(raw: string, onEntry: (json: string) => void) {
   check(depth === 0 && !inString, "Ratings file ended mid-object — truncated download?");
 }
 
-/** Mean and standard deviation, used to turn a raw score into a percentile. */
-function describe(values: number[]) {
-  const count = values.length;
-  const mean = values.reduce((a, b) => a + b, 0) / count;
-  const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / count;
-  return { mean: Number(mean.toFixed(4)), stdev: Number(Math.sqrt(variance).toFixed(4)), count };
+/**
+ * Summarise a criterion's population so the UI can place one score in it.
+ *
+ * We ship an empirical quantile ladder rather than a mean and standard
+ * deviation. These populations are strongly left-skewed and heavy-tailed
+ * (skew around -2.4, excess kurtosis around +8 on the review criteria), so
+ * placing a score with a normal curve misreads its true rank by as much as
+ * 24 percentile points. The ladder makes the displayed percentile agree with
+ * the entity's actual position in the sorted population, which is what the
+ * badge claims to be showing.
+ *
+ * `confidenceP10` is the thin-evidence cutoff. It is a percentile of this
+ * criterion's own confidence values rather than a fixed constant, because
+ * confidence is an unbounded weight-of-evidence figure whose scale differs
+ * per criterion — a constant would flag everything or nothing.
+ */
+function describe(bayesian: number[], confidence: number[]) {
+  const sorted = [...bayesian].sort((a, b) => a - b);
+  /** 101 breakpoints: ladder[k] is the value at the k-th percentile. */
+  const ladder = Array.from({ length: 101 }, (_, k) =>
+    Number(sorted[Math.round((k / 100) * (sorted.length - 1))].toFixed(4)),
+  );
+
+  const conf = [...confidence].sort((a, b) => a - b);
+  const confidenceP10 = Number(
+    conf[Math.floor(0.1 * (conf.length - 1))].toFixed(4),
+  );
+
+  return { count: sorted.length, ladder, confidenceP10 };
 }
 
 await runBuild("Ratings build", async () => {
@@ -178,7 +201,7 @@ await runBuild("Ratings build", async () => {
   };
   const distributions: Record<
     "courses" | "instructors",
-    Record<string, { mean: number; stdev: number; count: number }>
+    Record<string, { count: number; ladder: number[]; confidenceP10: number }>
   > = { courses: {}, instructors: {} };
 
   for (const kind of ["courses", "instructors"] as const) {
@@ -187,7 +210,7 @@ await runBuild("Ratings build", async () => {
     const raw = await readFile(path, "utf8");
 
     const entries = results[kind];
-    const samples: Record<string, number[]> = {};
+    const populations: Record<string, { bayesian: number[]; confidence: number[] }> = {};
     let total = 0;
     let malformed = 0;
 
@@ -220,7 +243,10 @@ await runBuild("Ratings build", async () => {
 
       entries[key] = ratings;
       for (const [criterion, value] of Object.entries(ratings)) {
-        (samples[criterion] ??= []).push((value as RatingValue).bayesian);
+        const v = value as RatingValue;
+        const pop = (populations[criterion] ??= { bayesian: [], confidence: [] });
+        pop.bayesian.push(v.bayesian);
+        pop.confidence.push(v.confidence);
       }
     });
 
@@ -238,8 +264,17 @@ await runBuild("Ratings build", async () => {
       `${filename} produced only ${matched} rated entries at term ${termNum}`,
     );
 
-    for (const [criterion, values] of Object.entries(samples)) {
-      distributions[kind][criterion] = describe(values);
+    for (const [criterion, pop] of Object.entries(populations)) {
+      const summary = describe(pop.bayesian, pop.confidence);
+      // A ladder that is not sorted and finite would silently produce nonsense
+      // percentiles in the browser, so refuse to publish one.
+      check(
+        summary.ladder.every(
+          (v, i) => Number.isFinite(v) && (i === 0 || v >= summary.ladder[i - 1]),
+        ),
+        `${filename}: ${criterion} quantile ladder is not finite and non-decreasing`,
+      );
+      distributions[kind][criterion] = summary;
     }
 
     // For instructors this percentage is the name-match rate between two

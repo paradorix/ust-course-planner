@@ -40,6 +40,18 @@ interface TermIndex {
   terms: { termNum: number; termCode: string; termName: string; courseCount: number }[];
 }
 
+/**
+ * One rating chip to render. The browser builds these per course/instructor so
+ * that "show every category" and "rank by one category" are the same code
+ * path with a different-length list, rather than two branches everywhere.
+ */
+export interface Chip {
+  key: Criterion;
+  /** Only set when several categories are on screen and need naming. */
+  label?: string;
+  score: Scored | null;
+}
+
 export interface SeatInfo {
   capacity: number;
   enroll: number;
@@ -64,7 +76,9 @@ export default function Planner() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [criterion, setCriterion] = useState<Criterion>("teaching");
+  // "all" is the default: with no category chosen the browser shows every
+  // category's ranking side by side rather than picking one for the user.
+  const [criterion, setCriterion] = useState<Criterion | "all">("all");
   const [search, setSearch] = useState("");
   const [career, setCareer] = useState<string>("all");
   const [onlyRated, setOnlyRated] = useState(false);
@@ -235,20 +249,33 @@ export default function Planner() {
 
   // ---- derived ------------------------------------------------------------
 
-  const scoreCourse = useCallback(
-    (course: Course): Scored | null =>
-      courseRatings
-        ? scoreOf(courseRatings.entries[course.code], criterion, courseRatings.distribution)
-        : null,
-    [courseRatings, criterion],
+  const shownCriteria = useMemo(
+    (): readonly Criterion[] => (criterion === "all" ? CRITERIA : [criterion]),
+    [criterion],
   );
 
-  const scoreInstructor = useCallback(
-    (name: string): Scored | null =>
-      instructorRatings
-        ? scoreOf(instructorRatings.entries[name], criterion, instructorRatings.distribution)
-        : null,
-    [instructorRatings, criterion],
+  const courseChips = useCallback(
+    (course: Course): Chip[] =>
+      shownCriteria.map((c) => ({
+        key: c,
+        label: criterion === "all" ? CRITERION_META[c].label : undefined,
+        score: courseRatings
+          ? scoreOf(courseRatings.entries[course.code], c, courseRatings.distribution)
+          : null,
+      })),
+    [shownCriteria, criterion, courseRatings],
+  );
+
+  const instructorChips = useCallback(
+    (name: string): Chip[] =>
+      shownCriteria.map((c) => ({
+        key: c,
+        label: criterion === "all" ? CRITERION_META[c].label : undefined,
+        score: instructorRatings
+          ? scoreOf(instructorRatings.entries[name], c, instructorRatings.distribution)
+          : null,
+      })),
+    [shownCriteria, criterion, instructorRatings],
   );
 
   const filtered = useMemo(() => {
@@ -258,7 +285,6 @@ export default function Planner() {
     const rows = schedule.courses
       .filter((course) => {
         if (career !== "all" && course.career !== career) return false;
-        if (onlyRated && !scoreCourse(course)) return false;
         if (!needle) return true;
         return (
           course.code.toLowerCase().includes(needle) ||
@@ -270,16 +296,24 @@ export default function Planner() {
           )
         );
       })
-      .map((course) => ({ course, score: scoreCourse(course) }));
+      .map((course) => ({ course, chips: courseChips(course) }))
+      // "rated only" means rated on whatever is currently on screen: one
+      // category when ranking by it, any category when showing them all.
+      .filter(({ chips }) => !onlyRated || chips.some((c) => c.score));
 
     rows.sort((a, b) => {
-      const byScore = byScoreDesc(a.score, b.score);
-      if (byScore !== 0) return byScore;
+      // With every category shown at once, none of them is *the* ranking, and
+      // the data does not support collapsing them into one. Fall back to code
+      // order rather than inventing a composite.
+      if (criterion !== "all") {
+        const byScore = byScoreDesc(a.chips[0].score, b.chips[0].score);
+        if (byScore !== 0) return byScore;
+      }
       return a.course.code.localeCompare(b.course.code);
     });
 
     return rows;
-  }, [schedule, search, career, onlyRated, scoreCourse]);
+  }, [schedule, search, career, onlyRated, criterion, courseChips]);
 
   const placed: PlacedSection[] = useMemo(() => {
     if (!schedule) return [];
@@ -340,7 +374,7 @@ export default function Planner() {
     );
   }
 
-  const ratedCount = filtered.filter((r) => r.score).length;
+  const ratedCount = filtered.filter((r) => r.chips.some((c) => c.score)).length;
 
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-6">
@@ -386,6 +420,18 @@ export default function Planner() {
       <section className="rounded-lg bg-surface ring-1 ring-border-subtle p-3 print:hidden">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted mr-1">Rank by</span>
+          <button
+            type="button"
+            onClick={() => setCriterion("all")}
+            title="Show every category's ranking side by side, unweighted"
+            className={`rounded-md px-2.5 py-1.5 text-xs font-medium ring-1 transition ${
+              criterion === "all"
+                ? "bg-sky-500/20 text-sky-200 ring-sky-500/50"
+                : "bg-surface-raised text-muted ring-border-subtle hover:text-foreground"
+            }`}
+          >
+            All categories
+          </button>
           {CRITERIA.map((c) => {
             const meta = CRITERION_META[c];
             const on = criterion === c;
@@ -407,8 +453,10 @@ export default function Planner() {
           })}
         </div>
         <p className="mt-2 text-[11px] text-muted">
-          {CRITERION_META[criterion].blurb}. Scores are percentiles against courses on offer
-          this term, not raw survey numbers.
+          {criterion === "all"
+            ? "Showing every category, unweighted and uncombined — pick one to rank the list by."
+            : `${CRITERION_META[criterion].blurb}.`}{" "}
+          Scores are percentiles against courses on offer this term, not raw survey numbers.
         </p>
       </section>
 
@@ -454,8 +502,10 @@ export default function Planner() {
               "Loading…"
             ) : (
               <>
-                {filtered.length} course{filtered.length === 1 ? "" : "s"} · {ratedCount} with a{" "}
-                {CRITERION_META[criterion].label.toLowerCase()} rating
+                {filtered.length} course{filtered.length === 1 ? "" : "s"} · {ratedCount}{" "}
+                {criterion === "all"
+                  ? "with a rating in at least one category"
+                  : `with a ${CRITERION_META[criterion].label.toLowerCase()} rating`}
                 {ratedCount < filtered.length ? (
                   <>
                     {" "}
@@ -467,7 +517,7 @@ export default function Planner() {
           </div>
 
           <div ref={listRef} className="max-h-[70vh] overflow-y-auto">
-            {filtered.slice(0, visible).map(({ course, score }) => {
+            {filtered.slice(0, visible).map(({ course, chips }) => {
               const open = expanded === course.code;
               return (
                 <div key={course.code} className="border-b border-border-subtle/60 last:border-0">
@@ -479,7 +529,11 @@ export default function Planner() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono text-sm font-semibold">{course.code}</span>
-                        <RatingBadge score={score} />
+                        {criterion !== "all"
+                          ? chips.map((chip) => (
+                              <RatingBadge key={chip.key} score={chip.score} scale="courses" />
+                            ))
+                          : null}
                         <span className="text-[11px] text-muted">
                           {course.credits} cr · {course.sections.length} section
                           {course.sections.length === 1 ? "" : "s"}
@@ -488,6 +542,22 @@ export default function Planner() {
                       <div className="mt-0.5 truncate text-sm text-foreground/90">
                         {course.title}
                       </div>
+                      {/*
+                        Six chips do not fit on the code line, so in
+                        all-categories mode they get their own wrapping row.
+                      */}
+                      {criterion === "all" ? (
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {chips.map((chip) => (
+                            <RatingBadge
+                              key={chip.key}
+                              score={chip.score}
+                              label={chip.label}
+                              scale="courses"
+                            />
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                     <span className="mt-1 text-muted text-xs">{open ? "−" : "+"}</span>
                   </button>
@@ -526,19 +596,29 @@ export default function Planner() {
                         </div>
                       ) : null}
 
+                      {/*
+                        The course badges above and the instructor badges below
+                        share a letter vocabulary but are not the same
+                        measurement, and stacked together they read as if they
+                        were. Say so once per course rather than on every
+                        section or every chip.
+                      */}
+                      <p className="mb-2 text-[10px] text-muted">
+                        Instructor scores rank each person against all instructors, averaged
+                        over every course they teach — not against this course&apos;s score
+                        above.
+                      </p>
+
                       <div className="space-y-1.5">
                         {course.sections.map((section) => (
                           <SectionRow
                             key={section.number}
-                            code={course.code}
                             section={section}
                             selected={selected.has(section.number)}
                             clashing={clashKeys.has(`${course.code}:${section.section}`)}
                             seat={seatState.seats[String(section.number)] ?? null}
                             seatsFailed={seatState.failed}
-                            scoreInstructor={scoreInstructor}
-                            courseScore={score}
-                            criterionLabel={CRITERION_META[criterion].label}
+                            instructorChips={instructorChips}
                             onToggle={() => toggleSection(section.number)}
                           />
                         ))}
