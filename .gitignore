@@ -36,6 +36,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# downloaded source data for the build scripts (~90MB) — never commit this,
+# only the reduced public/data/*.json the scripts produce
+/.cache
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

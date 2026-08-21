@@ -2,13 +2,19 @@
   "name": "ust-course-planner",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "data:schedule": "node scripts/build-schedule.ts",
+    "data:ratings": "node scripts/build-ratings.ts",
+    "data:all": "npm run data:schedule && npm run data:ratings"
   },
   "dependencies": {
+    "@duckdb/node-api": "^1.5.5-r.4",
     "next": "16.3.2",
     "react": "19.2.8",
     "react-dom": "19.2.8"

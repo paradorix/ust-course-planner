@@ -1,0 +1,44 @@
+name: Refresh schedule data
+
+# Daily, matching the plan's decision on freshness: schedule data changes far
+# less than the source's ~45-minute cadence, so a daily rebuild is fresh
+# enough without burning CI minutes re-fetching identical data.
+on:
+  schedule:
+    - cron: "17 2 * * *" # 02:17 UTC daily — off the hour, avoids GitHub's peak-minute queueing
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build schedule data
+        run: npm run data:schedule
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- public/data/schedule; then
+            echo "No schedule changes."
+            exit 0
+          fi
+          git add public/data/schedule
+          git commit -m "chore: refresh schedule data"
+          git push

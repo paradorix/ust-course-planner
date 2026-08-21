@@ -1,0 +1,45 @@
+name: Refresh ratings data
+
+# Weekly, matching the plan's decision on freshness: ratings move slowly and
+# the source files are large (tens of MB), so a weekly rebuild is right.
+# Ratings are always sliced against whatever schedule data is already
+# checked in, so this runs independently of the daily schedule refresh.
+on:
+  schedule:
+    - cron: "40 2 * * 1" # 02:40 UTC every Monday
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build ratings data
+        run: npm run data:ratings
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- public/data/ratings; then
+            echo "No ratings changes."
+            exit 0
+          fi
+          git add public/data/ratings
+          git commit -m "chore: refresh ratings data"
+          git push
