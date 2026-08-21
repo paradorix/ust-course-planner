@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PrintSummary from "@/components/PrintSummary";
 import RatingBadge from "@/components/RatingBadge";
 import SectionRow from "@/components/SectionRow";
 import TemplateBar from "@/components/TemplateBar";
@@ -343,7 +344,7 @@ export default function Planner() {
 
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-6">
-      <header className="flex flex-wrap items-end justify-between gap-4">
+      <header className="flex flex-wrap items-end justify-between gap-4 print:hidden">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">UST Course Planner</h1>
           <p className="text-xs text-muted mt-1">
@@ -382,7 +383,7 @@ export default function Planner() {
         </div>
       </header>
 
-      <section className="rounded-lg bg-surface ring-1 ring-border-subtle p-3">
+      <section className="rounded-lg bg-surface ring-1 ring-border-subtle p-3 print:hidden">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted mr-1">Rank by</span>
           {CRITERIA.map((c) => {
@@ -411,9 +412,9 @@ export default function Planner() {
         </p>
       </section>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] print:block">
         {/* ---- browser ---- */}
-        <section className="flex flex-col rounded-lg bg-surface ring-1 ring-border-subtle">
+        <section className="flex flex-col rounded-lg bg-surface ring-1 ring-border-subtle print:hidden">
           <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle p-3">
             <input
               value={search}
@@ -566,13 +567,15 @@ export default function Planner() {
 
         {/* ---- timetable ---- */}
         <section className="flex flex-col gap-3">
-          <TemplateBar
-            store={store}
-            setStore={setStore}
-            termNum={termNum}
-            credits={credits}
-            clashCount={clashes.length}
-          />
+          <div className="print:hidden">
+            <TemplateBar
+              store={store}
+              setStore={setStore}
+              termNum={termNum}
+              credits={credits}
+              clashCount={clashes.length}
+            />
+          </div>
 
           {clashes.length > 0 ? (
             <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs">
@@ -590,28 +593,51 @@ export default function Planner() {
           ) : null}
 
           <div className="rounded-lg bg-surface ring-1 ring-border-subtle p-3">
+            <div className="mb-2 flex items-center justify-between print:hidden">
+              <h2 className="text-sm font-semibold">Timetable</h2>
+              {placed.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  title="Opens your browser's print dialog — choose 'Save as PDF' as the destination"
+                  className="rounded-md bg-surface-raised px-2.5 py-1 text-xs font-medium text-sky-300 ring-1 ring-border-subtle hover:text-sky-200"
+                >
+                  Export as PDF
+                </button>
+              ) : null}
+            </div>
+
             {placed.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted">
                 Pick sections on the left and they&apos;ll appear here.
               </p>
             ) : (
-              <WeekGrid
-                placed={placed}
-                clashKeys={clashKeys}
-                termStart={termBounds.start}
-                termEnd={termBounds.end}
-                onRemove={toggleSection}
-              />
+              <>
+                <PrintSummary
+                  templateName={active?.name ?? "My timetable"}
+                  termName={schedule?.termName ?? ""}
+                  placed={placed}
+                  credits={credits}
+                  generatedAt={new Date()}
+                />
+                <WeekGrid
+                  placed={placed}
+                  clashKeys={clashKeys}
+                  termStart={termBounds.start}
+                  termEnd={termBounds.end}
+                  onRemove={toggleSection}
+                />
+              </>
             )}
             {placed.length > 0 ? (
-              <p className="mt-2 text-[11px] text-muted">
+              <p className="mt-2 text-[11px] text-muted print:hidden">
                 Click a block to remove it. Amber dates mark meetings that run for only part of
                 the term.
               </p>
             ) : null}
           </div>
 
-          <p className="text-[11px] text-muted">
+          <p className="text-[11px] text-muted print:hidden">
             {seatState.failed
               ? "Live seat counts unavailable — showing the daily snapshot instead."
               : seatState.retrievedAt

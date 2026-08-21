@@ -36,3 +36,28 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
+
+/*
+ * Print / "Export as PDF" output.
+ *
+ * Every component reads its colors from these tokens (see :root above), so
+ * retinting them here — rather than overriding classes component by
+ * component — turns the whole dark UI into an ink-friendly light page for
+ * free. Combined with the `print:hidden` / `print:block` utility classes
+ * used in Planner.tsx and PrintSummary.tsx to hide interactive chrome and
+ * reveal the print-only summary table.
+ */
+@media print {
+  :root {
+    --background: #ffffff;
+    --surface: #ffffff;
+    --surface-raised: #f3f4f6;
+    --border: #d1d5db;
+    --foreground: #111318;
+    --muted: #55606f;
+  }
+
+  body {
+    background: white;
+  }
+}
