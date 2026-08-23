@@ -2,7 +2,11 @@
 
 /**
  * One section within an expanded course: meeting times, instructor(s) with
- * their own rating, seats, and the add/remove control.
+ * their own rating, seats, and the pin control.
+ *
+ * Pinning forces this exact section onto the grid, as a hard constraint the
+ * solver schedules around — selection is course-level now (see the smart
+ * planner update), so this is no longer a plain add/remove.
  */
 
 import RatingBadge from "@/components/RatingBadge";
@@ -11,21 +15,21 @@ import type { Section } from "@/lib/types";
 
 export default function SectionRow({
   section,
-  selected,
+  pinned,
   clashing,
   seat,
   seatsFailed,
   instructorChips,
-  onToggle,
+  onTogglePin,
 }: {
   section: Section;
-  selected: boolean;
+  pinned: boolean;
   clashing: boolean;
   seat: SeatInfo | null;
   seatsFailed: boolean;
   /** One chip per criterion being shown, so this row never branches on mode. */
   instructorChips: (name: string) => Chip[];
-  onToggle: () => void;
+  onTogglePin: () => void;
 }) {
   const instructorNames = [
     ...new Set(section.meetings.flatMap((m) => m.instructors)),
@@ -44,7 +48,7 @@ export default function SectionRow({
   return (
     <div
       className={`rounded-md p-2.5 ring-1 transition ${
-        selected
+        pinned
           ? clashing
             ? "bg-rose-500/10 ring-rose-500/50"
             : "bg-sky-500/10 ring-sky-500/40"
@@ -106,14 +110,19 @@ export default function SectionRow({
         <div className="flex flex-col items-end gap-1.5">
           <button
             type="button"
-            onClick={onToggle}
+            onClick={onTogglePin}
+            title={
+              pinned
+                ? "Unpin — the solver is free to swap this section for another"
+                : "Pin this exact section — the solver will schedule around it"
+            }
             className={`rounded-md px-2.5 py-1 text-xs font-medium ring-1 transition ${
-              selected
+              pinned
                 ? "bg-rose-500/15 text-rose-200 ring-rose-500/40 hover:bg-rose-500/25"
                 : "bg-sky-500/15 text-sky-200 ring-sky-500/40 hover:bg-sky-500/25"
             }`}
           >
-            {selected ? "Remove" : "Add"}
+            {pinned ? "Unpin" : "Pin"}
           </button>
 
           <div
