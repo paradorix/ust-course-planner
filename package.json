@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "data:schedule": "node scripts/build-schedule.ts",
     "data:ratings": "node scripts/build-ratings.ts",
     "data:all": "npm run data:schedule && npm run data:ratings"
@@ -27,6 +28,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.11"
   }
 }

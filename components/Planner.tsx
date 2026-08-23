@@ -11,14 +11,22 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import CourseListView from "@/components/CourseListView";
+import PreferencePanel from "@/components/PreferencePanel";
 import PrintSummary from "@/components/PrintSummary";
 import RatingBadge from "@/components/RatingBadge";
 import SectionRow from "@/components/SectionRow";
 import TemplateBar from "@/components/TemplateBar";
 import WeekGrid from "@/components/WeekGrid";
 import { clashingSections, findClashes, type PlacedSection } from "@/lib/conflicts";
+import { DEFAULT_PREFERENCES, scoreTimetable, type Preferences } from "@/lib/preferences";
+import { encodePrefs } from "@/lib/prefs-url";
 import { byScoreDesc, scoreOf, type Scored } from "@/lib/rating";
+import { downloadTimetableImage } from "@/lib/share-image";
+import { solve, type SolveOutcome } from "@/lib/solver";
 import {
+  backfillWanted,
   loadStore,
   makeTemplate,
   saveStore,
@@ -84,8 +92,12 @@ export default function Planner() {
   const [onlyRated, setOnlyRated] = useState(false);
   const [visible, setVisible] = useState(PAGE_SIZE);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [view, setView] = useState<"grid" | "list">("grid");
+  const [smartPlannerEnabled, setSmartPlannerEnabled] = useState(true);
+  const [prefs, setPrefs] = useState<Preferences>(DEFAULT_PREFERENCES);
+  const [solveOutcome, setSolveOutcome] = useState<SolveOutcome | null>(null);
 
-  const [store, setStore] = useState<Store>({ version: 1, activeId: null, templates: [] });
+  const [store, setStore] = useState<Store>({ version: 2, activeId: null, templates: [] });
   const [hydrated, setHydrated] = useState(false);
   const [seatState, setSeatState] = useState<SeatState>({
     seats: {},
@@ -209,9 +221,24 @@ export default function Planner() {
     setStore((prev) => {
       if (prev.templates.length > 0) return prev;
       const first = makeTemplate("My timetable", termNum);
-      return { version: 1, activeId: first.id, templates: [first] };
+      return { version: 2, activeId: first.id, templates: [first] };
     });
   }, [hydrated, termNum]);
+
+  // Class number -> course code, the join a v1 -> v2 migrated template needs
+  // to derive `wanted` from what it has (`pinned`). See lib/templates.ts.
+  const classToCode = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const course of schedule?.courses ?? []) {
+      for (const section of course.sections) map.set(section.number, course.code);
+    }
+    return map;
+  }, [schedule]);
+
+  useEffect(() => {
+    if (!hydrated || !schedule) return;
+    setStore((prev) => backfillWanted(prev, (n) => classToCode.get(n) ?? null));
+  }, [hydrated, schedule, classToCode]);
 
   const updateActive = useCallback((mutate: (template: Template) => Template) => {
     setStore((prev) => {
@@ -225,27 +252,93 @@ export default function Planner() {
     });
   }, []);
 
+  const wanted = useMemo(
+    () => new Set(active?.termNum === termNum ? active.wanted : []),
+    [active, termNum],
+  );
+
+  const pinned = useMemo(
+    () => new Set(active?.termNum === termNum ? active.pinned : []),
+    [active, termNum],
+  );
+
   const selected = useMemo(
     () => new Set(active?.termNum === termNum ? active.selected : []),
     [active, termNum],
   );
 
-  const toggleSection = useCallback(
-    (classNumber: number) => {
+  // Wanting a course is the primary act of selection now — sections are
+  // pinned or solver-derived. Dropping a course drops anything pinned or
+  // placed for it too, so nothing of it lingers on the grid unexplained.
+  const toggleWanted = useCallback(
+    (code: string) => {
       if (termNum === null) return;
       updateActive((template) => {
-        const has = template.selected.includes(classNumber);
+        const has = template.wanted.includes(code);
+        if (!has) return { ...template, termNum, wanted: [...template.wanted, code] };
+        const isThisCourse = (n: number) => classToCode.get(n) === code;
         return {
           ...template,
           termNum,
-          selected: has
-            ? template.selected.filter((n) => n !== classNumber)
-            : [...template.selected, classNumber],
+          wanted: template.wanted.filter((c) => c !== code),
+          pinned: template.pinned.filter((n) => !isThisCourse(n)),
+          selected: template.selected.filter((n) => !isThisCourse(n)),
         };
       });
     },
-    [termNum, updateActive],
+    [termNum, updateActive, classToCode],
   );
+
+  // Pinning forces one specific section onto the grid and implicitly wants
+  // its course. Unpinning removes it from the grid too — until the solver
+  // (smart mode) exists, a pin is the only thing that puts a section in play.
+  const togglePin = useCallback(
+    (classNumber: number) => {
+      if (termNum === null) return;
+      const code = classToCode.get(classNumber);
+      updateActive((template) => {
+        const has = template.pinned.includes(classNumber);
+        if (has) {
+          return {
+            ...template,
+            termNum,
+            pinned: template.pinned.filter((n) => n !== classNumber),
+            selected: template.selected.filter((n) => n !== classNumber),
+          };
+        }
+        return {
+          ...template,
+          termNum,
+          wanted: code && !template.wanted.includes(code) ? [...template.wanted, code] : template.wanted,
+          pinned: [...template.pinned, classNumber],
+          selected: [...template.selected, classNumber],
+        };
+      });
+    },
+    [termNum, updateActive, classToCode],
+  );
+
+  // Live seat status by class number, in the shape lib/preferences.ts wants —
+  // the same data SectionRow already shows, reused as a solver input.
+  const liveOpen = useMemo(() => {
+    const map: Record<number, boolean> = {};
+    for (const [numStr, info] of Object.entries(seatState.seats)) map[Number(numStr)] = info.open;
+    return map;
+  }, [seatState.seats]);
+
+  // Runs the solver over the active template's wishlist + pins + preferences
+  // and writes its top pick straight into `selected` — sections stay
+  // solver-derived; pinning is the only manual override.
+  const handleGenerate = useCallback(() => {
+    if (!schedule || !active) return;
+    const outcome = solve(schedule.courses, active.wanted, active.pinned, prefs, { liveOpen });
+    setSolveOutcome(outcome);
+    const top = outcome.results[0];
+    if (top) {
+      const numbers = top.placed.map((p) => p.section.number);
+      updateActive((template) => ({ ...template, selected: numbers }));
+    }
+  }, [schedule, active, prefs, liveOpen, updateActive]);
 
   // ---- derived ------------------------------------------------------------
 
@@ -340,6 +433,17 @@ export default function Planner() {
     }
     return total;
   }, [schedule, placed]);
+
+  const handleShare = useCallback(() => {
+    if (!schedule || placed.length === 0) return;
+    downloadTimetableImage({
+      templateName: active?.name ?? "My timetable",
+      termName: schedule.termName,
+      credits,
+      placed,
+      breakdown: scoreTimetable(placed, prefs, liveOpen),
+    });
+  }, [schedule, active, credits, placed, prefs, liveOpen]);
 
   const termBounds = useMemo(() => {
     let start = "9999-12-31";
@@ -521,12 +625,12 @@ export default function Planner() {
               const open = expanded === course.code;
               return (
                 <div key={course.code} className="border-b border-border-subtle/60 last:border-0">
-                  <button
-                    type="button"
-                    onClick={() => setExpanded(open ? null : course.code)}
-                    className="flex w-full items-start gap-3 p-3 text-left hover:bg-surface-raised/60"
-                  >
-                    <div className="min-w-0 flex-1">
+                  <div className="flex w-full items-start gap-2 p-3 hover:bg-surface-raised/60">
+                    <button
+                      type="button"
+                      onClick={() => setExpanded(open ? null : course.code)}
+                      className="min-w-0 flex-1 text-left"
+                    >
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono text-sm font-semibold">{course.code}</span>
                         {criterion !== "all"
@@ -558,9 +662,34 @@ export default function Planner() {
                           ))}
                         </div>
                       ) : null}
+                    </button>
+
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleWanted(course.code)}
+                        title={
+                          wanted.has(course.code)
+                            ? "Remove this course — also drops any pinned sections and clears it from the grid"
+                            : "Want this course — the solver will fill in a section once smart mode runs"
+                        }
+                        className={`rounded-md px-2.5 py-1 text-xs font-medium ring-1 transition ${
+                          wanted.has(course.code)
+                            ? "bg-rose-500/15 text-rose-200 ring-rose-500/40 hover:bg-rose-500/25"
+                            : "bg-sky-500/15 text-sky-200 ring-sky-500/40 hover:bg-sky-500/25"
+                        }`}
+                      >
+                        {wanted.has(course.code) ? "Remove" : "Add"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExpanded(open ? null : course.code)}
+                        className="text-muted text-xs"
+                      >
+                        {open ? "−" : "+"}
+                      </button>
                     </div>
-                    <span className="mt-1 text-muted text-xs">{open ? "−" : "+"}</span>
-                  </button>
+                  </div>
 
                   {open ? (
                     <div className="px-3 pb-3">
@@ -614,12 +743,12 @@ export default function Planner() {
                           <SectionRow
                             key={section.number}
                             section={section}
-                            selected={selected.has(section.number)}
+                            pinned={pinned.has(section.number)}
                             clashing={clashKeys.has(`${course.code}:${section.section}`)}
                             seat={seatState.seats[String(section.number)] ?? null}
                             seatsFailed={seatState.failed}
                             instructorChips={instructorChips}
-                            onToggle={() => toggleSection(section.number)}
+                            onTogglePin={() => togglePin(section.number)}
                           />
                         ))}
                       </div>
@@ -657,6 +786,20 @@ export default function Planner() {
             />
           </div>
 
+          <div className="print:hidden">
+            <PreferencePanel
+              enabled={smartPlannerEnabled}
+              onChangeEnabled={setSmartPlannerEnabled}
+              wantedCodes={active?.termNum === termNum ? (active?.wanted ?? []) : []}
+              courses={schedule?.courses ?? []}
+              prefs={prefs}
+              onChangePrefs={setPrefs}
+              onRemoveWanted={toggleWanted}
+              onGenerate={handleGenerate}
+              error={solveOutcome?.error ?? null}
+            />
+          </div>
+
           {clashes.length > 0 ? (
             <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs">
               <p className="font-semibold text-rose-200">
@@ -673,17 +816,53 @@ export default function Planner() {
           ) : null}
 
           <div className="rounded-lg bg-surface ring-1 ring-border-subtle p-3">
-            <div className="mb-2 flex items-center justify-between print:hidden">
-              <h2 className="text-sm font-semibold">Timetable</h2>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 print:hidden">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold">Timetable</h2>
+                <div className="flex rounded-md ring-1 ring-border-subtle overflow-hidden text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setView("grid")}
+                    className={`px-2 py-1 font-medium transition ${
+                      view === "grid"
+                        ? "bg-sky-500/20 text-sky-200"
+                        : "bg-surface-raised text-muted hover:text-foreground"
+                    }`}
+                  >
+                    Grid
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setView("list")}
+                    className={`px-2 py-1 font-medium transition ${
+                      view === "list"
+                        ? "bg-sky-500/20 text-sky-200"
+                        : "bg-surface-raised text-muted hover:text-foreground"
+                    }`}
+                  >
+                    List
+                  </button>
+                </div>
+              </div>
               {placed.length > 0 ? (
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  title="Opens your browser's print dialog — choose 'Save as PDF' as the destination"
-                  className="rounded-md bg-surface-raised px-2.5 py-1 text-xs font-medium text-sky-300 ring-1 ring-border-subtle hover:text-sky-200"
-                >
-                  Export as PDF
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleShare}
+                    title="Renders the grid to a PNG image and downloads it — nothing is uploaded anywhere"
+                    className="rounded-md bg-surface-raised px-2.5 py-1 text-xs font-medium text-sky-300 ring-1 ring-border-subtle hover:text-sky-200"
+                  >
+                    Share as image
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    title="Opens your browser's print dialog — choose 'Save as PDF' as the destination"
+                    className="rounded-md bg-surface-raised px-2.5 py-1 text-xs font-medium text-sky-300 ring-1 ring-border-subtle hover:text-sky-200"
+                  >
+                    Export as PDF
+                  </button>
+                </div>
               ) : null}
             </div>
 
@@ -700,21 +879,51 @@ export default function Planner() {
                   credits={credits}
                   generatedAt={new Date()}
                 />
-                <WeekGrid
-                  placed={placed}
-                  clashKeys={clashKeys}
-                  termStart={termBounds.start}
-                  termEnd={termBounds.end}
-                  onRemove={toggleSection}
-                />
+                <div className="print:hidden">
+                  {view === "grid" ? (
+                    <WeekGrid
+                      placed={placed}
+                      clashKeys={clashKeys}
+                      termStart={termBounds.start}
+                      termEnd={termBounds.end}
+                      onRemove={togglePin}
+                    />
+                  ) : (
+                    <CourseListView
+                      courses={schedule?.courses ?? []}
+                      placed={placed}
+                      courseChips={courseChips}
+                      instructorChips={instructorChips}
+                    />
+                  )}
+                </div>
               </>
             )}
-            {placed.length > 0 ? (
+            {placed.length > 0 && view === "grid" ? (
               <p className="mt-2 text-[11px] text-muted print:hidden">
                 Click a block to remove it. Amber dates mark meetings that run for only part of
                 the term.
               </p>
             ) : null}
+          </div>
+
+          <div className="print:hidden">
+            {placed.length > 0 ? (
+              <Link
+                href={`/rate?${encodePrefs(prefs, active?.id ?? null).toString()}`}
+                title="Score this timetable against your preferences, with comments and alternatives — a separate page"
+                className="block w-full rounded-md bg-sky-500/20 px-3 py-2.5 text-center text-sm font-semibold text-sky-200 ring-1 ring-sky-500/50 transition hover:bg-sky-500/30"
+              >
+                Rate my timetable →
+              </Link>
+            ) : (
+              <span
+                title="Pick sections first — there's nothing to rate yet"
+                className="block w-full cursor-not-allowed rounded-md bg-surface-raised px-3 py-2.5 text-center text-sm font-semibold text-muted/60 ring-1 ring-border-subtle"
+              >
+                Rate my timetable →
+              </span>
+            )}
           </div>
 
           <p className="text-[11px] text-muted print:hidden">
