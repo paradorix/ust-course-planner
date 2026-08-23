@@ -184,6 +184,12 @@ export default function WeekGrid({
                       width: `${width}%`,
                     }}
                   >
+                    {block.clashing ? (
+                      <span
+                        aria-hidden="true"
+                        className="clash-flash pointer-events-none absolute inset-0 rounded bg-rose-500"
+                      />
+                    ) : null}
                     <div className="font-semibold truncate">
                       {block.code} {block.section}
                     </div>

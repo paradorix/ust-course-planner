@@ -38,6 +38,34 @@ body {
 }
 
 /*
+ * Clashing timetable blocks (WeekGrid.tsx) already get a static rose tint;
+ * this overlay pulses on top so an overlap is noticeable at a glance, not
+ * just on close inspection. Capped at 1.4s/opacity 0.45 — a gentle pulse, not
+ * a strobe — and disabled under prefers-reduced-motion, where a fixed tint
+ * still marks the clash without motion.
+ */
+@keyframes clash-flash {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.clash-flash {
+  animation: clash-flash 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clash-flash {
+    animation: none;
+    opacity: 0.3;
+  }
+}
+
+/*
  * Print / "Export as PDF" output.
  *
  * Every component reads its colors from these tokens (see :root above), so
